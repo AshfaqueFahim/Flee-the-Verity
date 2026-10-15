@@ -14,16 +14,17 @@ TURN_SPEED = 4
 PLAYER_RADIUS = 9
 
 ENEMY_SPEED = 1.5
-ENEMY_CHASE_SPEED = PLAYER_SPEED * 1.5
+ENEMY_CHASE_SPEED = ENEMY_SPEED * 1.5
 ENEMY_SIZE = 24
-
-DETECTION_RANGE = 200
-FOV_THRESHOLD = 0.5
 
 FLASHLIGHT_RANGE = 150
 FLASHLIGHT_THRESHOLD = 0.85
 
-HACK_TIME = 5 * 60
+# The enemy can see exactly as far as a flashlight reaches
+DETECTION_RANGE = FLASHLIGHT_RANGE
+FOV_THRESHOLD = 0.5
+
+HACK_TIME = 10 * 60
 RESCUE_TIME = 5 * 60
 
 INTERACT_RADIUS = 25
@@ -40,6 +41,8 @@ YELLOW = (255, 200, 0)
 CYAN = (0, 200, 220)
 BLUE = (60, 120, 255)
 ORANGE = (255, 140, 0)
+DOOR_BROWN = (139, 90, 43)
+DOOR_THICKNESS = 6
 
 INDOOR_FLOOR = (215, 215, 215)
 PATH_FLOOR = (225, 205, 160)
@@ -122,15 +125,6 @@ PLAYER_TWO_START = scaled_point(466, 1100)
 ENEMY_START = scaled_point(200, 500)
 
 
-class Wall:
-    def __init__(self, start, end):
-        self.start = pygame.Vector2(start)
-        self.end = pygame.Vector2(end)
-
-    def draw(self, screen):
-        pygame.draw.line(screen, BLACK, self.start, self.end, WALL_WIDTH)
-
-
 class Computer:
     def __init__(self, position):
         self.position = pygame.Vector2(position)
@@ -143,14 +137,26 @@ class Computer:
         rect.center = self.position
         if self.solved:
             color = GREEN
+        elif self.progress > 0:
+            color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
         else:
             color = RED
         pygame.draw.rect(screen, color, rect)
         pygame.draw.rect(screen, BLACK, rect, 2)
 
-        if self.progress > 0 and not self.solved:
-            bar_width = self.size * self.progress / HACK_TIME
-            pygame.draw.rect(screen, YELLOW, (rect.left, rect.top - 6, bar_width, 4))
+    def update(self, players, keys):
+        if self.solved:
+            return
+        hacking = False
+        for player in players:
+            if player.state == "FREE" and keys[player.interact_key] and player.position.distance_to(self.position) < INTERACT_RADIUS:
+                hacking = True
+        if hacking:
+            self.progress += 1
+            if self.progress >= HACK_TIME:
+                self.solved = True
+        else:
+            self.progress = 0
 
 
 class Tube:
@@ -161,11 +167,28 @@ class Tube:
         self.rescue_progress = 0
 
     def draw(self, screen):
-        pygame.draw.circle(screen, CYAN, self.position, self.radius, 3)
-
         if self.rescue_progress > 0:
-            bar_width = self.radius * 2 * self.rescue_progress / RESCUE_TIME
-            pygame.draw.rect(screen, YELLOW, (self.position.x - self.radius, self.position.y - self.radius - 6, bar_width, 4))
+            color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+        else:
+            color = CYAN
+        pygame.draw.circle(screen, color, self.position, self.radius, 3)
+
+    def update(self, players, keys):
+        if self.trapped_player is None:
+            self.rescue_progress = 0
+            return
+        rescuing = False
+        for player in players:
+            if player is not self.trapped_player and player.state == "FREE" and keys[player.interact_key] and player.position.distance_to(self.position) < INTERACT_RADIUS:
+                rescuing = True
+        if rescuing:
+            self.rescue_progress += 1
+            if self.rescue_progress >= RESCUE_TIME:
+                self.trapped_player.state = "FREE"
+                self.trapped_player = None
+                self.rescue_progress = 0
+        else:
+            self.rescue_progress = 0
 
 
 class Exit:
@@ -173,6 +196,9 @@ class Exit:
         self.start = pygame.Vector2(start)
         self.end = pygame.Vector2(end)
         self.is_open = False
+
+    def intersects(self, line_start, line_end):
+        return Wall.intersects(self, line_start, line_end)
 
     def draw(self, screen):
         if self.is_open:
@@ -196,31 +222,27 @@ class Player:
         self.right_key = right_key
         self.interact_key = interact_key
 
-    def forward_vector(self):
-        return pygame.Vector2(1, 0)
-
-    def turn(self, x):
-        pass
-
     def move(self, walls):
         if self.state == "TRAPPED":
             return
             
         keys = pygame.key.get_pressed()
         velocity = pygame.Vector2(0, 0)
-        
-        if keys[pygame.K_LEFT] or keys[pygame.K_a]:
+
+        if keys[self.left_key]:
             velocity.x = -PLAYER_SPEED
-        if keys[pygame.K_RIGHT] or keys[pygame.K_d]:
+        if keys[self.right_key]:
             velocity.x = PLAYER_SPEED
-        if keys[pygame.K_UP] or keys[pygame.K_w]:
+        if keys[self.forward_key]:
             velocity.y = -PLAYER_SPEED
-        if keys[pygame.K_DOWN] or keys[pygame.K_s]:
+        if keys[self.back_key]:
             velocity.y = PLAYER_SPEED
 
         if velocity.length() > 0:
             velocity = velocity.normalize() * PLAYER_SPEED
-        
+            # Face the way we're walking so the flashlight points there
+            self.angle = pygame.Vector2(1, 0).angle_to(velocity)
+
         next_pos_x = pygame.Vector2(self.position.x + velocity.x, self.position.y)
         hit_wall_x = False
         for wall in walls:
@@ -275,11 +297,23 @@ class Enemy:
         return target_point
     
     def can_see(self, player, walls):
-        for wall in walls:
-            if wall.intersects(self.position, player.position):
+        to_player = player.position - self.position
+        distance = to_player.length()
+
+        # Harder to spot someone standing in the dark
+        sight_range = DETECTION_RANGE
+        if is_dark(player.position):
+            sight_range = DETECTION_RANGE / 2
+        if distance > sight_range:
+            return False
+
+        # Dot product: 1 = straight ahead, 0 = off to the side, -1 = behind
+        if distance > 0:
+            facing = pygame.Vector2(1, 0).rotate(self.angle)
+            if facing.dot(to_player.normalize()) < FOV_THRESHOLD:
                 return False
-                
-        return True
+
+        return not line_hits_wall(self.position, player.position, walls)
 
     def wander(self):
         if random.random() < 0.2:
@@ -290,19 +324,20 @@ class Enemy:
             self.velocity = base_vector.rotate(random_angle)
         self.wander_timer = random.randint(40, 150)
         self.wander_interval = random.randint(40, 150)
-        pass
 
     def chase(self, player):
         direction = player.position - self.position
         
         if direction.length() > 0:
-            self.velocity = direction.normalize() * ENEMY_SPEED
+            self.velocity = direction.normalize() * ENEMY_CHASE_SPEED
 
-    def move(self, player, walls):
-        if self.can_see(player, walls):
+    def move(self, players, walls):
+        visible = [p for p in players if p.state == "FREE" and self.can_see(p, walls)]
+        if visible:
+            target = min(visible, key=lambda p: self.position.distance_to(p.position))
             self.state = "CHASE"
             self.image = self.angry_image
-            self.chase(player)
+            self.chase(target)
         else:
             self.state = "PATROL"
             self.image = self.happy_image
@@ -401,22 +436,83 @@ def build_walls():
 
     return walls
 
-game_walls = build_walls() 
+def build_doors():
+    # Doors fill the doorway gaps with brown so they're easy to spot.
+    # They are only drawn, never added to the wall list, so anyone can walk through.
+    doors = []
+    for name, side, gap_start, gap_end in DOORWAYS:
+        rect = ROOMS[name]
+        if side == "top":
+            start, end = (scale(gap_start), rect.top), (scale(gap_end), rect.top)
+        elif side == "bottom":
+            start, end = (scale(gap_start), rect.bottom), (scale(gap_end), rect.bottom)
+        elif side == "left":
+            start, end = (rect.left, scale(gap_start)), (rect.left, scale(gap_end))
+        else:
+            start, end = (rect.right, scale(gap_start)), (rect.right, scale(gap_end))
+        doors.append(Wall(start, end, DOOR_BROWN, DOOR_THICKNESS))
+    return doors
+
+game_walls = build_walls()
+game_doors = build_doors()
 
 def is_dark(position):
-    return False
+    # The green forest is dark, buildings and paths are lit
+    for name in ROOMS:
+        if ROOMS[name].collidepoint(position):
+            return False
+    for rect in PATH_RECTS:
+        if rect.collidepoint(position):
+            return False
+    return True
 
 
 def line_hits_wall(a, b, walls):
+    for wall in walls:
+        if wall.intersects(a, b):
+            return True
     return False
 
 
-def in_flashlight(player, position):
-    return False
+def beam_end(start, direction):
+    # Walk along the beam 5 pixels at a time until it hits a wall
+    end = start + direction * FLASHLIGHT_RANGE
+    walls_in_the_way = [wall for wall in game_walls if wall.intersects(start, end)]
+    for distance in range(0, FLASHLIGHT_RANGE, 5):
+        if line_hits_wall(start, start + direction * (distance + 5), walls_in_the_way):
+            return start + direction * distance
+    return end
+
+
+def flashlight_shape(player):
+    # A cone made of a bunch of rays fanned out around where the player faces
+    half_width = math.degrees(math.acos(FLASHLIGHT_THRESHOLD))
+    points = [player.position]
+    for i in range(21):
+        angle = player.angle - half_width + (half_width * 2) * i / 20
+        direction = pygame.Vector2(1, 0).rotate(angle)
+        points.append(beam_end(player.position, direction))
+    return points
+
+
+def draw_darkness(screen):
+    darkness_layer.fill((0, 0, 0, 235))
+    for name in ROOMS:
+        pygame.draw.rect(darkness_layer, (0, 0, 0, 0), ROOMS[name])
+    for rect in PATH_RECTS:
+        pygame.draw.rect(darkness_layer, (0, 0, 0, 0), rect)
+    # Drawing a see-through polygon cuts a hole in the darkness
+    for player in players:
+        if player.state == "FREE":
+            pygame.draw.polygon(darkness_layer, (0, 0, 0, 0), flashlight_shape(player))
+    screen.blit(darkness_layer, (0, 0))
 
 
 def nearest_tube(position, tubes):
-    return tubes[0]
+    empty_tubes = [tube for tube in tubes if tube.trapped_player is None]
+    if not empty_tubes:
+        return None
+    return min(empty_tubes, key=lambda tube: tube.position.distance_to(position))
 
 
 def draw_floor(screen):
@@ -432,44 +528,126 @@ screen = pygame.display.set_mode((WIDTH, HEIGHT))
 pygame.display.set_caption("Flee the Facility 2D")
 clock = pygame.time.Clock()
 font = pygame.font.Font(None, 24)
+darkness_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
 
 
-computers = [Computer(spot) for spot in COMPUTER_SPOTS]
-tubes = [Tube(spot) for spot in TUBE_SPOTS]
-exits = [Exit(line[0], line[1]) for line in EXIT_LINES]
+folder = os.path.dirname(os.path.abspath(__file__))
+jumpscare_image = pygame.image.load(os.path.join(folder, "verity angry.png")).convert_alpha()
+win_image = pygame.image.load(os.path.join(folder, "win screen.png")).convert()
+win_image = pygame.transform.smoothscale(win_image, (WIDTH, HEIGHT))
+scream_sound = pygame.mixer.Sound(os.path.join(folder, "five-nights-at-freddys-full-scream-sound_2.mp3"))
+menu_image = pygame.image.load(os.path.join(folder, "menu.png")).convert()
+# Shrink the wide menu to fit the window without stretching it
+menu_fit = min(WIDTH / menu_image.get_width(), HEIGHT / menu_image.get_height())
+menu_image = pygame.transform.smoothscale(
+    menu_image, (int(menu_image.get_width() * menu_fit), int(menu_image.get_height() * menu_fit))
+)
 
-player_one = Player(PLAYER_ONE_START, BLUE, pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_e)
-player_two = Player(PLAYER_TWO_START, ORANGE, pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_p)
-players = [player_one, player_two]
+JUMPSCARE_GROW_TIME = 30  # frames for verity to fill the screen
+SCREAM_TIME = int(scream_sound.get_length() * 60)  # frames the scream lasts
+WIN_TIME = 5 * 60  # 5 seconds
 
-enemy = Enemy(ENEMY_START)
 
-game_state = "PLAYING"
+def reset_game():
+    global computers, tubes, exits, player_one, player_two, players, enemy, game_state, timer
+    scream_sound.stop()
+    computers = [Computer(spot) for spot in COMPUTER_SPOTS]
+    tubes = [Tube(spot) for spot in TUBE_SPOTS]
+    exits = [Exit(line[0], line[1]) for line in EXIT_LINES]
+    player_one = Player(PLAYER_ONE_START, BLUE, pygame.K_w, pygame.K_s, pygame.K_a, pygame.K_d, pygame.K_e)
+    player_two = Player(PLAYER_TWO_START, ORANGE, pygame.K_UP, pygame.K_DOWN, pygame.K_LEFT, pygame.K_RIGHT, pygame.K_p)
+    players = [player_one, player_two]
+    enemy = Enemy(ENEMY_START)
+    game_state = "PLAYING"
+    timer = 0
 
-running = True
+
+def draw_jumpscare(screen, frame):
+    screen.fill(BLACK)
+    # Grow from tiny to bigger than the screen over JUMPSCARE_GROW_TIME frames
+    size = int(min(frame / JUMPSCARE_GROW_TIME, 1) * HEIGHT * 1.2) + 1
+    image = pygame.transform.scale(jumpscare_image, (size, size))
+    rect = image.get_rect(center=(WIDTH / 2, HEIGHT / 2))
+    screen.blit(image, rect)
+
+
+def update_exits():
+    all_solved = all(computer.solved for computer in computers)
+    # Nobody leaves while a teammate is stuck in a tube
+    someone_trapped = any(p.state == "TRAPPED" for p in players)
+    for exit_door in exits:
+        exit_door.is_open = all_solved and not someone_trapped
+
+
+def player_walls():
+    # Exits act as walls until every computer is solved
+    return game_walls + [exit_door for exit_door in exits if not exit_door.is_open]
+
+
+def show_menu():
+    # Shown once at launch; returns True on space, False if the window is closed
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return False
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+                return True
+        screen.fill(menu_image.get_at((0, 0)))  # match the image's own background color
+        screen.blit(menu_image, menu_image.get_rect(center=(WIDTH / 2, HEIGHT / 2)))
+        pygame.display.flip()
+        clock.tick(60)
+
+
+reset_game()
+
+running = show_menu()
 while running:
     for event in pygame.event.get():
         if event.type == pygame.QUIT:
             running = False
+        if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
+            reset_game()
+
+    if game_state == "JUMPSCARE":
+        timer += 1
+        draw_jumpscare(screen, timer)
+        if timer == JUMPSCARE_GROW_TIME:
+            scream_sound.play()
+        if timer >= JUMPSCARE_GROW_TIME + SCREAM_TIME:
+            reset_game()
+        pygame.display.flip()
+        clock.tick(60)
+        continue
+
+    if game_state == "WIN":
+        timer += 1
+        screen.blit(win_image, (0, 0))
+        if timer >= WIN_TIME:
+            reset_game()
+        pygame.display.flip()
+        clock.tick(60)
+        continue
 
     keys = pygame.key.get_pressed()
 
     for player in players:
-        player.move(game_walls)
-    enemy.move(player, game_walls)
+        player.move(player_walls())
+    enemy.move(players, game_walls + exits)
+    for computer in computers:
+        computer.update(players, keys)
+    update_exits()
+    for tube in tubes:
+        tube.update(players, keys)
 
     for p in players:
-        if p.state == "FREE":
-            distance = enemy.position.distance_to(p.position)
+        if p.state != "FREE":
+            continue
+        distance = enemy.position.distance_to(p.position)
         # If enemy collides with a player
         if distance < (enemy.radius + p.radius):
-            # Gather empty tubes
-            available_tubes = [t for t in tubes if t.trapped_player is None]
-            if available_tubes:
-                # Find closest empty tube capsule
-                available_tubes.sort(key=lambda t: t.position.distance_to(p.position))
-                target_tube = available_tubes[0]
+            target_tube = nearest_tube(p.position, tubes)
+            if target_tube:
                 # Lock the player state and teleport them inside
                 p.state = "TRAPPED"
                 p.position = pygame.Vector2(target_tube.position)
@@ -478,23 +656,35 @@ while running:
                 enemy.wander()
                 break
 
-    for wall in game_walls:
-        wall.draw(screen)
+    # A player escapes once they walk past the edge of the map through an open exit
+    for p in players:
+        if p.state == "FREE" and (p.position.x > scale(1077) or p.position.y > scale(1157)):
+            p.state = "ESCAPED"
+
+    if all(p.state == "TRAPPED" for p in players):
+        game_state = "JUMPSCARE"
+        timer = 0
+    if all(p.state == "ESCAPED" for p in players):
+        game_state = "WIN"
+        timer = 0
 
     draw_floor(screen)
-    for wall in game_walls:
-        wall.draw(screen)
-    for exit_door in exits:
-        exit_door.draw(screen)
     for computer in computers:
         computer.draw(screen)
     for tube in tubes:
         tube.draw(screen)
+    enemy.draw(screen)
+
+    # Darkness goes over the green forest, but walls and players stay visible on top
+    draw_darkness(screen)
+    for wall in game_walls:
+        wall.draw(screen)
+    for door in game_doors:
+        door.draw(screen)
+    for exit_door in exits:
+        exit_door.draw(screen)
     for player in players:
         player.draw(screen)
-
-    player.draw(screen)
-    enemy.draw(screen)
 
     solved = 0
     for computer in computers:
