@@ -17,8 +17,10 @@ ENEMY_SPEED = 1.5
 ENEMY_CHASE_SPEED = ENEMY_SPEED * 1.5
 ENEMY_SIZE = 24
 
-FLASHLIGHT_RANGE = 150
-FLASHLIGHT_THRESHOLD = 0.85
+FLASHLIGHT_RANGE = 220
+FLASHLIGHT_THRESHOLD = 0.70
+VERITY_LIGHT_RADIUS = 75
+HEARTBEAT_DISTANCE = 300
 
 DETECTION_RANGE = FLASHLIGHT_RANGE
 FOV_THRESHOLD = 0.5
@@ -45,8 +47,12 @@ DOOR_THICKNESS = 6
 
 INDOOR_FLOOR = (215, 215, 215)
 PATH_FLOOR = (225, 205, 160)
-FOREST_FLOOR = (40, 110, 50)
+FOREST_FLOOR = (25, 75, 35)
 DARKNESS = (0, 0, 0)
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
 
 
 def scale(x):
@@ -70,6 +76,24 @@ ROOMS = {
     "Brown House": scaled_rect(535, 505, 424, 221),
     "Barn": scaled_rect(536, 811, 541, 303),
     "Shed": scaled_rect(265, 850, 126, 176),
+}
+
+ROOM_COLORS = {
+    "Small Shed": (120, 100, 75),
+
+    "White House": (210, 205, 185),
+
+    "Maze": (90, 105, 115),
+
+    "Garage": (105, 110, 120),
+
+    "Log": (100, 70, 45),
+
+    "Brown House": (135, 90, 55),
+
+    "Barn": (145, 65, 55),
+
+    "Shed": (105, 90, 70),
 }
 
 PATH_RECTS = [
@@ -130,32 +154,124 @@ class Computer:
         self.size = scale(26)
         self.progress = 0
         self.solved = False
+        self.active_hackers = 0
+        self.error_timer = 0
+        self.error_triggered = False
 
     def draw(self, screen):
-        rect = pygame.Rect(0, 0, self.size, self.size)
-        rect.center = self.position
-        if self.solved:
-            color = GREEN
-        elif self.progress > 0:
-            color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
-        else:
-            color = RED
-        pygame.draw.rect(screen, color, rect)
-        pygame.draw.rect(screen, BLACK, rect, 2)
+        x = int(self.position.x)
+        y = int(self.position.y)
 
-    def update(self, players, keys):
+        # Overall monitor dimensions
+        monitor_w = int(scale(40))
+        monitor_h = int(scale(28))
+
+        monitor_rect = pygame.Rect(
+            x - monitor_w // 2,
+            y - monitor_h // 2,
+            monitor_w,
+            monitor_h
+        )
+
+        # Outer monitor casing
+        pygame.draw.rect(
+            screen,
+            (35, 35, 40),
+            monitor_rect,
+            border_radius=3
+        )
+
+        # Inner screen
+        screen_rect = monitor_rect.inflate(-6, -6)
+
         if self.solved:
-            return
-        hacking = False
-        for player in players:
-            if player.state == "FREE" and keys[player.interact_key] and player.position.distance_to(self.position) < INTERACT_RADIUS:
-                hacking = True
-        if hacking:
-            self.progress += 1
-            if self.progress >= HACK_TIME:
-                self.solved = True
+            screen_color = GREEN
+        elif self.error_timer > 0:
+            screen_color = RED
         else:
-            self.progress = 0
+            screen_color = BLUE
+
+        pygame.draw.rect(
+            screen,
+            screen_color,
+            screen_rect,
+            border_radius=2
+        )
+
+        # Monitor stand
+        stand_top = monitor_rect.bottom
+
+        pygame.draw.line(
+            screen,
+            (50, 50, 55),
+            (x, stand_top),
+            (x, stand_top + int(scale(8))),
+            3
+        )
+
+        # Keyboard / base
+        keyboard = pygame.Rect(
+            x - int(scale(18)),
+            stand_top + int(scale(7)),
+            int(scale(36)),
+            int(scale(7))
+        )
+
+        pygame.draw.rect(
+            screen,
+            (65, 65, 70),
+            keyboard,
+            border_radius=2
+        )
+
+        pygame.draw.rect(
+            screen,
+            BLACK,
+            keyboard,
+            1,
+            border_radius=2
+        )
+
+
+    def update(self, players):
+        if self.error_timer > 0:
+            self.error_timer -= 1
+
+        if self.solved:
+            self.active_hackers = 0
+
+            for player in players:
+                if player.hacking_computer is self:
+                    player.stop_hacking()
+
+            return
+
+        self.active_hackers = 0
+
+        for player in players:
+            if player.hacking_computer is not self:
+                continue
+
+            # Player stopped hacking by leaving the computer
+            if (
+                player.state != "FREE"
+                or player.position.distance_to(self.position) >= INTERACT_RADIUS
+            ):
+                player.stop_hacking()
+                continue
+
+            self.active_hackers += 1
+
+            # Run that player's skill-check timer
+            player.update_skill_check()
+
+        # Hacking automatically continues while nearby
+        if self.active_hackers > 0:
+            self.progress += self.active_hackers
+
+            if self.progress >= HACK_TIME:
+                self.progress = HACK_TIME
+                self.solved = True
 
 
 class Tube:
@@ -166,11 +282,134 @@ class Tube:
         self.rescue_progress = 0
 
     def draw(self, screen):
+        x = int(self.position.x)
+        y = int(self.position.y)
+
+        tube_w = int(scale(30))
+        tube_h = int(scale(50))
+
+        left = x - tube_w // 2
+        top = y - tube_h // 2
+
+        # Main tube interior
+        inner_rect = pygame.Rect(
+            left,
+            top,
+            tube_w,
+            tube_h
+        )
+
+        # Interior
+        pygame.draw.rect(
+            screen,
+            (64, 224, 208),
+            inner_rect,
+            border_radius=tube_w // 2
+        )
+
+        # Color changes during rescue
         if self.rescue_progress > 0:
-            color = (random.randint(0, 255), random.randint(0, 255), random.randint(0, 255))
+            glow_colors = [
+                (0, 255, 255),
+                (255, 255, 255),
+                (70, 180, 255)
+            ]
+
+            tube_color = random.choice(glow_colors)
+
         else:
-            color = CYAN
-        pygame.draw.circle(screen, color, self.position, self.radius, 3)
+            tube_color = CYAN
+
+        # Glass outline
+        pygame.draw.rect(
+            screen,
+            tube_color,
+            inner_rect,
+            3,
+            border_radius=tube_w // 2
+        )
+
+        # Top metal cap
+        top_cap = pygame.Rect(
+            left - 2,
+            top - 3,
+            tube_w + 4,
+            7
+        )
+
+        pygame.draw.rect(
+            screen,
+            (80, 90, 95),
+            top_cap,
+            border_radius=3
+        )
+
+        pygame.draw.rect(
+            screen,
+            BLACK,
+            top_cap,
+            1,
+            border_radius=3
+        )
+
+        # Bottom metal cap
+        bottom_cap = pygame.Rect(
+            left - 2,
+            top + tube_h - 4,
+            tube_w + 4,
+            7
+        )
+
+        pygame.draw.rect(
+            screen,
+            (80, 90, 95),
+            bottom_cap,
+            border_radius=3
+        )
+
+        pygame.draw.rect(
+            screen,
+            BLACK,
+            bottom_cap,
+            1,
+            border_radius=3
+        )
+
+
+        # Rescue progress bar
+        if self.rescue_progress > 0:
+            bar_w = tube_w + 8
+
+            bar_rect = pygame.Rect(
+                x - bar_w // 2,
+                bottom_cap.bottom + 4,
+                bar_w,
+                4
+            )
+
+            pygame.draw.rect(
+                screen,
+                (40, 40, 40),
+                bar_rect
+            )
+
+            progress_ratio = min(
+                self.rescue_progress / RESCUE_TIME,
+                1
+            )
+
+            fill_rect = pygame.Rect(
+                bar_rect.x,
+                bar_rect.y,
+                int(bar_rect.width * progress_ratio),
+                bar_rect.height
+            )
+
+            pygame.draw.rect(
+                screen,
+                CYAN,
+                fill_rect
+            )
 
     def update(self, players, keys):
         if self.trapped_player is None:
@@ -221,6 +460,18 @@ class Player:
         self.right_key = right_key
         self.interact_key = interact_key
 
+        # Hacking state
+        self.hacking_computer = None
+
+        # Skill check state
+        self.skill_check_active = False
+        self.skill_timer = 0
+        self.skill_marker = 0.0
+        self.skill_speed = 0.018
+
+        self.skill_zone_start = 0.0
+        self.skill_zone_end = 0.0
+
     def move(self, walls):
         if self.state == "TRAPPED":
             return
@@ -268,6 +519,77 @@ class Player:
         pygame.draw.polygon(screen, self.color, [front, left, right])
         pygame.draw.polygon(screen, BLACK, [front, left, right], 1)
 
+    def start_hacking(self, computer):
+        self.hacking_computer = computer
+        self.schedule_skill_check()
+
+
+    def stop_hacking(self):
+        self.hacking_computer = None
+        self.skill_check_active = False
+        self.skill_marker = 0.0
+        self.skill_timer = 0
+
+
+    def schedule_skill_check(self):
+        # Wait 2–4 seconds before next skill check
+        self.skill_timer = random.randint(120, 240)
+
+        self.skill_check_active = False
+        self.skill_marker = 0.0
+
+        # Random success zone
+        self.skill_zone_start = random.uniform(0.55, 0.75)
+        self.skill_zone_end = self.skill_zone_start + 0.15
+
+
+    def update_skill_check(self):
+        if self.hacking_computer is None:
+            return
+
+        if not self.skill_check_active:
+            self.skill_timer -= 1
+
+            if self.skill_timer <= 0:
+                self.skill_check_active = True
+                self.skill_marker = 0.0
+                skill_check_sound.play()
+
+        else:
+            self.skill_marker += self.skill_speed
+
+            # Marker reached the end without player pressing
+            if self.skill_marker > 1.0:
+                self.fail_skill_check()
+
+
+    def resolve_skill_check(self):
+        if not self.skill_check_active:
+            return
+
+        if self.skill_zone_start <= self.skill_marker <= self.skill_zone_end:
+            # Success
+            self.schedule_skill_check()
+
+        else:
+            # Player pressed too early / too late
+            self.fail_skill_check()
+
+
+    def fail_skill_check(self):
+        computer = self.hacking_computer
+
+        if computer is not None:
+            # Lose about one second of hacking progress
+            computer.progress = max(0, computer.progress - 60)
+
+            # Computer flashes red
+            computer.error_timer = 45
+            computer.error_triggered = True
+            error_sound.play()
+
+        self.schedule_skill_check()
+
 
 class Enemy:
     def __init__(self, position):
@@ -278,21 +600,26 @@ class Enemy:
         self.state = "PATROL"
         self.wander_timer = 0
         self.wander_interval = 0
+        self.investigate_target = None
+        self.investigate_timer = 0
 
-        folder = os.path.dirname(os.path.abspath(__file__))
-        happy = pygame.image.load(os.path.join(folder, "verity happy.png")).convert_alpha()
-        angry = pygame.image.load(os.path.join(folder, "verity angry.png")).convert_alpha()
+
+
+        happy = pygame.image.load(
+            os.path.join(BASE_DIR, "verity happy.png")
+        ).convert_alpha()
+
+        angry = pygame.image.load(
+            os.path.join(BASE_DIR, "verity angry.png")
+        ).convert_alpha()
+
         self.happy_image = pygame.transform.smoothscale(happy, (ENEMY_SIZE, ENEMY_SIZE))
         self.angry_image = pygame.transform.smoothscale(angry, (ENEMY_SIZE, ENEMY_SIZE))
         self.image = self.happy_image
         self.wander()
 
     def forward_vector(self):
-            
-        forward_direction = pygame.math.Vector2(1, 0).rotate(self.angle)
-        forward_vector = forward_direction * 10
-        target_point = self.position + forward_vector
-        return target_point
+        return pygame.Vector2(1, 0).rotate(self.angle)
     
     def can_see(self, player, walls):
         to_player = player.position - self.position
@@ -306,7 +633,7 @@ class Enemy:
 
         # Dot product: 1 = straight ahead, 0 = off to the side, -1 = behind
         if distance > 0:
-            facing = pygame.Vector2(1, 0).rotate(self.angle)
+            facing = self.forward_vector()
             if facing.dot(to_player.normalize()) < FOV_THRESHOLD:
                 return False
 
@@ -314,12 +641,13 @@ class Enemy:
 
     def wander(self):
         if random.random() < 0.2:
-            self.velocity = pygame.math.Vector2(0, 0)
+            self.velocity = pygame.Vector2(0, 0)
         else:
-            base_vector = pygame.math.Vector2(ENEMY_SPEED, 0)
+            base_vector = pygame.Vector2(ENEMY_SPEED, 0)
             random_angle = random.uniform(0, 360)
             self.velocity = base_vector.rotate(random_angle)
-        self.wander_timer = random.randint(40, 150)
+
+        self.wander_timer = 0
         self.wander_interval = random.randint(40, 150)
 
     def chase(self, player):
@@ -329,17 +657,47 @@ class Enemy:
             self.velocity = direction.normalize() * ENEMY_CHASE_SPEED
 
     def move(self, players, walls):
-        visible = [p for p in players if p.state == "FREE" and self.can_see(p, walls)]
+        visible = [
+            p for p in players
+            if p.state == "FREE" and self.can_see(p, walls)
+        ]
+
+        # Highest priority: player is actually visible
         if visible:
-            target = min(visible, key=lambda p: self.position.distance_to(p.position))
+            target = min(
+                visible,
+                key=lambda p: self.position.distance_to(p.position)
+            )
+
             self.state = "CHASE"
             self.image = self.angry_image
             self.chase(target)
+
+        # Second priority: investigate a failed computer
+        elif self.investigate_target is not None:
+            self.state = "INVESTIGATE"
+            self.image = self.angry_image
+
+            direction = self.investigate_target - self.position
+            self.investigate_timer -= 1
+
+            # Give up if Verity reaches the computer
+            # OR has investigated for 3 seconds
+            if direction.length() <= 10 or self.investigate_timer <= 0:
+                self.investigate_target = None
+                self.investigate_timer = 0
+                self.wander()
+
+            else:
+                self.velocity = direction.normalize() * ENEMY_SPEED
+
+        # Otherwise wander normally
         else:
             self.state = "PATROL"
             self.image = self.happy_image
-            
+
             self.wander_timer += 1
+
             if self.wander_timer >= self.wander_interval:
                 self.wander()
 
@@ -355,20 +713,38 @@ class Enemy:
                 break
                 
         if collision:
-            self.wander() 
+            # Don't get permanently stuck trying to investigate
+            if self.state == "INVESTIGATE":
+                self.investigate_target = None
+                self.investigate_timer = 0
+
+            self.wander()
+
         else:
             self.position = next_position
+
+    def investigate(self, position):
+        self.investigate_target = pygame.Vector2(position)
+        self.investigate_timer = 3 * 60
 
 
 
     def draw(self, screen):
         rotated_image = pygame.transform.rotate(self.image, -self.angle)
         rect = rotated_image.get_rect(center=self.position)
-        
+
         screen.blit(rotated_image, rect)
-        
-        # Draw the forward sight line
-        pygame.draw.line(screen, (0, 0, 0), self.position, self.forward_vector(), 2)
+
+        forward = self.forward_vector()
+        line_end = self.position + forward * 10
+
+        pygame.draw.line(
+            screen,
+            BLACK,
+            self.position,
+            line_end,
+            2
+        )
 
 class Wall:
     def __init__(self, start_pos, end_pos, color=(100, 100, 100), thickness=3):
@@ -446,7 +822,7 @@ def build_doors():
     return doors
 
 game_walls = build_walls()
-game_doors = build_doors()
+door_markers = build_doors()
 
 def is_dark(position):
     for name in ROOMS:
@@ -483,17 +859,53 @@ def flashlight_shape(player):
         points.append(beam_end(player.position, direction))
     return points
 
-
 def draw_darkness(screen):
-    darkness_layer.fill((0, 0, 0, 235))
-    for name in ROOMS:
-        pygame.draw.rect(darkness_layer, (0, 0, 0, 0), ROOMS[name])
-    for rect in PATH_RECTS:
-        pygame.draw.rect(darkness_layer, (0, 0, 0, 0), rect)
+    darkness_layer.fill((0, 0, 0, 255))
+
     for player in players:
-        if player.state == "FREE":
-            pygame.draw.polygon(darkness_layer, (0, 0, 0, 0), flashlight_shape(player))
+        if player.state != "FREE":
+            continue
+
+        # DIM LIGHT INSIDE BUILDINGS
+        for name, room in ROOMS.items():
+            if room.collidepoint(player.position):
+                pygame.draw.rect(
+                    darkness_layer,
+                    (0, 0, 0, 115),
+                    room
+                )
+
+        # SMALL AMBIENT PLAYER LIGHT
+        pygame.draw.circle(
+            darkness_layer,
+            (0, 0, 0, 80),
+            (int(player.position.x), int(player.position.y)),
+            45
+        )
+
+        # FULL FLASHLIGHT VISIBILITY
+        pygame.draw.polygon(
+            darkness_layer,
+            (0, 0, 0, 0),
+            flashlight_shape(player)
+        )
+
+    # VERITY RED LIGHT
+    center = (
+        int(enemy.position.x),
+        int(enemy.position.y)
+    )
+
+    pygame.draw.circle(
+        darkness_layer,
+        (255, 0, 30, 110),
+        center,
+        VERITY_LIGHT_RADIUS
+    )
+
     screen.blit(darkness_layer, (0, 0))
+
+
 
 
 def nearest_tube(position, tubes):
@@ -504,11 +916,24 @@ def nearest_tube(position, tubes):
 
 
 def draw_floor(screen):
+    # Forest
     screen.fill(FOREST_FLOOR)
+
+    # Paths
     for rect in PATH_RECTS:
-        pygame.draw.rect(screen, PATH_FLOOR, rect)
-    for name in ROOMS:
-        pygame.draw.rect(screen, INDOOR_FLOOR, ROOMS[name])
+        pygame.draw.rect(
+            screen,
+            PATH_FLOOR,
+            rect
+        )
+
+    # Individual room colors
+    for name, rect in ROOMS.items():
+        pygame.draw.rect(
+            screen,
+            ROOM_COLORS[name],
+            rect
+        )
 
 
 pygame.init()
@@ -519,24 +944,72 @@ font = pygame.font.Font(None, 24)
 darkness_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 
 # media
-jumpscare_image = pygame.image.load("verity angry.png").convert_alpha()
-win_image = pygame.image.load("win screen.png").convert()
-win_image = pygame.transform.smoothscale(win_image, (WIDTH, HEIGHT))
-scream_sound = pygame.mixer.Sound("five-nights-at-freddys-full-scream-sound_2.ogg")
-menu_image = pygame.image.load("menu.png").convert()
-menu_fit = min(WIDTH / menu_image.get_width(), HEIGHT / menu_image.get_height())
-menu_image = pygame.transform.smoothscale(
-    menu_image, (int(menu_image.get_width() * menu_fit), int(menu_image.get_height() * menu_fit))
+jumpscare_image = pygame.image.load(
+    os.path.join(BASE_DIR, "verity angry.png")
+).convert_alpha()
+
+win_image = pygame.image.load(
+    os.path.join(BASE_DIR, "win screen.png")
+).convert()
+
+win_image = pygame.transform.smoothscale(
+    win_image,
+    (WIDTH, HEIGHT)
 )
+
+scream_sound = pygame.mixer.Sound(
+    os.path.join(
+        BASE_DIR,
+        "five-nights-at-freddys-full-scream-sound_2.ogg"
+    )
+)
+
+hacking_sound = pygame.mixer.Sound(
+    os.path.join(BASE_DIR, "hacking.ogg")
+)
+
+skill_check_sound = pygame.mixer.Sound(
+    os.path.join(BASE_DIR, "skill_check.ogg")
+)
+
+error_sound = pygame.mixer.Sound(
+    os.path.join(BASE_DIR, "error.ogg")
+)
+
+heartbeat_sound = pygame.mixer.Sound(
+    os.path.join(BASE_DIR, "heartbeat.ogg")
+)
+
+escape_sound = pygame.mixer.Sound(
+    os.path.join(BASE_DIR, "escape.ogg")
+)
+
+pygame.mixer.music.load(
+    os.path.join(BASE_DIR, "background.ogg")
+)
+
+pygame.mixer.music.set_volume(0.30)
+
+hacking_channel = pygame.mixer.Channel(1)
+heartbeat_channel = pygame.mixer.Channel(2)
+
+hacking_channel.set_volume(0.4)
+heartbeat_channel.set_volume(0.0)
+
+menu_image = pygame.image.load(
+    os.path.join(BASE_DIR, "menu.png")
+).convert()
 
 JUMPSCARE_GROW_TIME = 30  # frames for verity to fill the screen
 SCREAM_TIME = int(scream_sound.get_length() * 60)  # frames the scream lasts
 WIN_TIME = 5 * 60  # 5 seconds
 
 
+
 def reset_game():
     global computers, tubes, exits, player_one, player_two, players, enemy, game_state, timer
     scream_sound.stop()
+    pygame.mixer.music.unpause()
     computers = [Computer(spot) for spot in COMPUTER_SPOTS]
     tubes = [Tube(spot) for spot in TUBE_SPOTS]
     exits = [Exit(line[0], line[1]) for line in EXIT_LINES]
@@ -573,7 +1046,7 @@ async def show_menu():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_ENTER:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_RETURN:
                 return True
         screen.fill(menu_image.get_at((0, 0)))  # match the images own background color
         screen.blit(menu_image, menu_image.get_rect(center=(WIDTH / 2, HEIGHT / 2)))
@@ -581,19 +1054,282 @@ async def show_menu():
         clock.tick(60)
         await asyncio.sleep(0)
 
+def handle_hack_press(player, computers):
+    if player.state != "FREE":
+        return
+
+    # Already hacking something
+    if player.hacking_computer is not None:
+
+        # E/P is now the skill-check button
+        if player.skill_check_active:
+            player.resolve_skill_check()
+
+        return
+
+    # Not currently hacking:
+    # find unfinished computers within interaction range
+    nearby_computers = [
+        computer
+        for computer in computers
+        if (
+            not computer.solved
+            and player.position.distance_to(computer.position) < INTERACT_RADIUS
+        )
+    ]
+
+    if nearby_computers:
+        closest = min(
+            nearby_computers,
+            key=lambda computer:
+                player.position.distance_to(computer.position)
+        )
+
+        player.start_hacking(closest)
+
+def draw_hacking_ui(screen, players, font):
+    row = 0
+
+    for player_number, player in enumerate(players, start=1):
+        computer = player.hacking_computer
+
+        if computer is None:
+            continue
+
+        # Extra safety
+        if player.position.distance_to(computer.position) >= INTERACT_RADIUS:
+            continue
+
+        bar_width = 360
+        bar_height = 18
+
+        x = (WIDTH - bar_width) // 2
+        y = HEIGHT - 35 - row * 70
+
+        progress_ratio = computer.progress / HACK_TIME
+
+        # HACKING PROGRESS BAR
+
+        progress_background = pygame.Rect(
+            x,
+            y,
+            bar_width,
+            bar_height
+        )
+
+        pygame.draw.rect(
+            screen,
+            (30, 30, 35),
+            progress_background,
+            border_radius=4
+        )
+
+        progress_fill = pygame.Rect(
+            x,
+            y,
+            int(bar_width * progress_ratio),
+            bar_height
+        )
+
+        pygame.draw.rect(
+            screen,
+            BLUE,
+            progress_fill,
+            border_radius=4
+        )
+
+        pygame.draw.rect(
+            screen,
+            WHITE,
+            progress_background,
+            2,
+            border_radius=4
+        )
+
+        percent = int(progress_ratio * 100)
+
+        hacking_text = font.render(
+            f"P{player_number} HACKING: {percent}%",
+            True,
+            player.color
+        )
+
+        screen.blit(
+            hacking_text,
+            hacking_text.get_rect(
+                center=(WIDTH // 2, y - 12)
+            )
+        )
+
+        # SKILL CHECK
+
+        if player.skill_check_active:
+            skill_y = y - 40
+
+            skill_background = pygame.Rect(
+                x,
+                skill_y,
+                bar_width,
+                12
+            )
+
+            pygame.draw.rect(
+                screen,
+                (40, 40, 40),
+                skill_background,
+                border_radius=3
+            )
+
+            # Success zone
+            zone_x = x + int(
+                bar_width * player.skill_zone_start
+            )
+
+            zone_width = int(
+                bar_width
+                * (
+                    player.skill_zone_end
+                    - player.skill_zone_start
+                )
+            )
+
+            success_zone = pygame.Rect(
+                zone_x,
+                skill_y,
+                zone_width,
+                12
+            )
+
+            pygame.draw.rect(
+                screen,
+                GREEN,
+                success_zone
+            )
+
+            # Moving marker
+            marker_x = x + int(
+                bar_width * player.skill_marker
+            )
+
+            pygame.draw.line(
+                screen,
+                WHITE,
+                (marker_x, skill_y - 4),
+                (marker_x, skill_y + 16),
+                3
+            )
+
+            key_name = pygame.key.name(
+                player.interact_key
+            ).upper()
+
+            prompt = font.render(
+                f"PRESS {key_name}",
+                True,
+                WHITE
+            )
+
+            screen.blit(
+                prompt,
+                prompt.get_rect(
+                    center=(WIDTH // 2, skill_y - 12)
+                )
+            )
+
+        # ERROR MESSAGE
+
+        elif computer.error_timer > 0:
+            error_text = font.render(
+                "ERROR!",
+                True,
+                RED
+            )
+
+            screen.blit(
+                error_text,
+                error_text.get_rect(
+                    center=(WIDTH // 2, y - 35)
+                )
+            )
+
+        row += 1
+
+def update_hacking_sound():
+    someone_hacking = any(
+        player.hacking_computer is not None
+        and player.state == "FREE"
+        for player in players
+    )
+
+    if someone_hacking:
+        if not hacking_channel.get_busy():
+            hacking_channel.play(
+                hacking_sound,
+                loops=-1
+            )
+
+    else:
+        hacking_channel.stop()
+
+def update_heartbeat():
+    free_players = [
+        player
+        for player in players
+        if player.state == "FREE"
+    ]
+
+    if not free_players:
+        heartbeat_channel.set_volume(0.0)
+        return
+
+    closest_distance = min(
+        player.position.distance_to(enemy.position)
+        for player in free_players
+    )
+
+    # 0 when far away, 1 when directly beside Verity
+    volume = 1.0 - (
+        closest_distance / HEARTBEAT_DISTANCE
+    )
+
+    volume = max(0.0, min(volume, 1.0))
+
+    heartbeat_channel.set_volume(volume)
+
+    if not heartbeat_channel.get_busy():
+        heartbeat_channel.play(
+            heartbeat_sound,
+            loops=-1
+        )
+
 async def main():
+    global game_state, timer
     reset_game()
 
     running = await show_menu()
+    pygame.mixer.music.play(-1)
 
     while running:
         for event in pygame.event.get():
+
             if event.type == pygame.QUIT:
                 running = False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_r:
-                reset_game()
+
+            elif event.type == pygame.KEYDOWN:
+
+                if event.key == pygame.K_r:
+                    reset_game()
+
+                elif event.key == player_one.interact_key:
+                    handle_hack_press(player_one, computers)
+
+                elif event.key == player_two.interact_key:
+                    handle_hack_press(player_two, computers)
 
         if game_state == "JUMPSCARE":
+            hacking_channel.stop()
+            heartbeat_channel.set_volume(0.0)
+            pygame.mixer.music.pause()
             timer += 1
             draw_jumpscare(screen, timer)
             if timer == JUMPSCARE_GROW_TIME:
@@ -606,21 +1342,34 @@ async def main():
             continue
 
         if game_state == "WIN":
+            hacking_channel.stop()
+            heartbeat_channel.set_volume(0.0)
+            pygame.mixer.music.pause()
             timer += 1
             screen.blit(win_image, (0, 0))
             if timer >= WIN_TIME:
                 reset_game()
             pygame.display.flip()
             clock.tick(60)
+            await asyncio.sleep(0)
             continue
 
         keys = pygame.key.get_pressed()
 
         for player in players:
             player.move(player_walls())
-        enemy.move(players, game_walls + exits)
         for computer in computers:
-            computer.update(players, keys)
+            computer.update(players)
+            
+        update_hacking_sound()
+        for computer in computers:
+            if computer.error_triggered:
+                enemy.investigate(computer.position)
+                computer.error_triggered = False
+
+        enemy.move(players, game_walls + exits)
+        update_heartbeat()
+
         update_exits()
         for tube in tubes:
             tube.update(players, keys)
@@ -634,9 +1383,12 @@ async def main():
                 target_tube = nearest_tube(p.position, tubes)
                 if target_tube:
                     # Lock the player state and teleport them inside
+                    p.stop_hacking()
                     p.state = "TRAPPED"
                     p.position = pygame.Vector2(target_tube.position)
                     target_tube.trapped_player = p
+                    enemy.investigate_target = None
+                    enemy.investigate_timer = 0
                     enemy.state = "PATROL"
                     enemy.wander()
                     break
@@ -644,7 +1396,9 @@ async def main():
         # A player escapes once they walk past the edge of the map through an open exit
         for p in players:
             if p.state == "FREE" and (p.position.x > scale(1077) or p.position.y > scale(1157)):
+                p.stop_hacking()
                 p.state = "ESCAPED"
+                escape_sound.play()
 
         if all(p.state == "TRAPPED" for p in players):
             game_state = "JUMPSCARE"
@@ -654,19 +1408,25 @@ async def main():
             timer = 0
 
         draw_floor(screen)
+
         for computer in computers:
             computer.draw(screen)
+
         for tube in tubes:
             tube.draw(screen)
+
         enemy.draw(screen)
 
-        draw_darkness(screen)
         for wall in game_walls:
             wall.draw(screen)
-        for door in game_doors:
+
+        for door in door_markers:
             door.draw(screen)
+
         for exit_door in exits:
             exit_door.draw(screen)
+
+        draw_darkness(screen)
         for player in players:
             player.draw(screen)
 
@@ -675,10 +1435,10 @@ async def main():
             if computer.solved:
                 solved += 1
         computers_text = font.render(f"Computers: {solved}/{len(computers)}", True, WHITE)
-        state_text = font.render(f"Enemy: {enemy.state}", True, WHITE)
+        state_text = font.render(f"Verity: {enemy.state}", True, WHITE)
         screen.blit(computers_text, (10, 240))
         screen.blit(state_text, (10, 260))
-
+        draw_hacking_ui(screen, players, font)
         pygame.display.flip()
         clock.tick(60)
         await asyncio.sleep(0)

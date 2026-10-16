@@ -19,7 +19,7 @@ Press **R** to restart.
 
 ## Rules
 
-- Hold the interact key at a computer to hack it or at a test tube to free your teammate
+- Press the interact key at a computer to hack it or hold at a test tube to free your teammate
 - If Verity catches you, you get locked in the nearest test tube. So don't get caught!!
 - Buildings are dark, so use your flashlight to see
 - Exits open once every computer is hacked and nobody (variant) is stuck in a tube
