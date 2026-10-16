@@ -522,7 +522,7 @@ darkness_layer = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
 jumpscare_image = pygame.image.load("verity angry.png").convert_alpha()
 win_image = pygame.image.load("win screen.png").convert()
 win_image = pygame.transform.smoothscale(win_image, (WIDTH, HEIGHT))
-scream_sound = pygame.mixer.Sound("five-nights-at-freddys-full-scream-sound_2.mp3")
+scream_sound = pygame.mixer.Sound("five-nights-at-freddys-full-scream-sound_2.ogg")
 menu_image = pygame.image.load("menu.png").convert()
 menu_fit = min(WIDTH / menu_image.get_width(), HEIGHT / menu_image.get_height())
 menu_image = pygame.transform.smoothscale(
@@ -573,7 +573,7 @@ async def show_menu():
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return False
-            if event.type == pygame.KEYDOWN and event.key == pygame.K_SPACE:
+            if event.type == pygame.KEYDOWN and event.key == pygame.K_ENTER:
                 return True
         screen.fill(menu_image.get_at((0, 0)))  # match the images own background color
         screen.blit(menu_image, menu_image.get_rect(center=(WIDTH / 2, HEIGHT / 2)))
@@ -584,7 +584,7 @@ async def show_menu():
 async def main():
     reset_game()
 
-    running = show_menu()
+    running = await show_menu()
 
     while running:
         for event in pygame.event.get():
@@ -602,6 +602,7 @@ async def main():
                 reset_game()
             pygame.display.flip()
             clock.tick(60)
+            await asyncio.sleep(0)
             continue
 
         if game_state == "WIN":
